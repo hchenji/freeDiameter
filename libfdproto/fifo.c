@@ -151,7 +151,7 @@ void fd_fifo_dump(int level, char * name, struct fifo * queue, void (*dump_item)
 		int i = 0;
 		for (li = queue->list.next; li != &queue->list; li = li->next) {
 			struct fifo_item * fi = (struct fifo_item *)li;
-			fd_log_debug("  [%i] item %p in fifo %p, posted:ld.%06ld", 
+			fd_log_debug("  [%i] item %p in fifo %p, posted:%ld.%06ld", 
 				i++, fi->item.o, queue, (long)fi->posted_on.tv_sec,(long)(fi->posted_on.tv_nsec/1000));
 			(*dump_item)(level, fi->item.o);
 		}
@@ -283,34 +283,11 @@ int fd_fifo_move ( struct fifo * old, struct fifo * new, struct fifo ** loc_upda
 	return 0;
 }
 
-/* Get the length of the queue */
-int fd_fifo_length ( struct fifo * queue, int * length, int * max )
+/* Get the information on the queue */
+int fd_fifo_getstats( struct fifo * queue, int * current_count, int * limit_count, int * highest_count, long long * total_count, 
+				           struct timespec * total, struct timespec * blocking, struct timespec * last)
 {
-	TRACE_ENTRY( "%p %p %p", queue, length, max );
-	
-	/* Check the parameters */
-	CHECK_PARAMS( CHECK_FIFO( queue ) && length );
-	
-	/* lock the queue */
-	CHECK_POSIX(  pthread_mutex_lock( &queue->mtx )  );
-	
-	/* Retrieve the count */
-	*length = queue->count;
-	
-	if (max)
-		*max = queue->max;
-	
-	/* Unlock */
-	CHECK_POSIX(  pthread_mutex_unlock( &queue->mtx )  );
-	
-	/* Done */
-	return 0;
-}
-
-/* Get the timings */
-int fd_fifo_getstats( struct fifo * queue, long long *items, struct timespec * total, struct timespec * blocking, struct timespec * last)
-{
-	TRACE_ENTRY( "%p %p %p %p %p", queue, items, total, blocking, last);
+	TRACE_ENTRY( "%p %p %p %p %p %p %p %p", queue, current_count, limit_count, highest_count, total_count, total, blocking, last);
 	
 	/* Check the parameters */
 	CHECK_PARAMS( CHECK_FIFO( queue ) );
@@ -318,8 +295,17 @@ int fd_fifo_getstats( struct fifo * queue, long long *items, struct timespec * t
 	/* lock the queue */
 	CHECK_POSIX(  pthread_mutex_lock( &queue->mtx )  );
 	
-	if (items)
-		*items = queue->total_items;
+	if (current_count)
+		*current_count = queue->count;
+	
+	if (limit_count)
+		*limit_count = queue->max;
+	
+	if (highest_count)
+		*highest_count = queue->highest_ever;
+	
+	if (total_count)
+		*total_count = queue->total_items;
 	
 	if (total)
 		memcpy(total, &queue->total_time, sizeof(struct timespec));
@@ -339,7 +325,7 @@ int fd_fifo_getstats( struct fifo * queue, long long *items, struct timespec * t
 
 
 /* alternate version with no error checking */
-int fd_fifo_length_noerr ( struct fifo * queue )
+int fd_fifo_length ( struct fifo * queue )
 {
 	if ( !CHECK_FIFO( queue ) )
 		return 0;

@@ -17,6 +17,8 @@ SET(FDCORE_SRC
 	endpoints.c
 	events.c
 	extensions.c
+	fifo_stats.c
+	hooks.c
 	dict_base_proto.c
 	messages.c
 	queues.c
