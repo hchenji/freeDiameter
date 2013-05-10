@@ -411,6 +411,7 @@ int fd_fifo_post_int ( struct fifo * queue, void ** item )
 	/* Create a new list item */
 	CHECK_MALLOC_DO(  new = malloc (sizeof (struct fifo_item)) , {
 			pthread_mutex_unlock( &queue->mtx );
+			return ENOMEM;
 		} );
 	
 	fd_list_init(&new->item, *item);
@@ -469,11 +470,11 @@ static void * mq_pop(struct fifo * queue)
 	
 	ASSERT( ! FD_IS_LIST_EMPTY(&queue->list) );
 	
-	fi = (struct fifo_item *)queue->list.next;
+	fi = (struct fifo_item *)(queue->list.next);
+	ret = fi->item.o;
 	fd_list_unlink(&fi->item);
 	queue->count--;
 	queue->total_items++;
-	ret = fi->item.o;
 	
 	/* Update the timings */
 	CHECK_SYS_DO(  clock_gettime(CLOCK_REALTIME, &now), goto skip_timing  );
@@ -577,8 +578,8 @@ static void fifo_cleanup(void * queue)
 /* The internal function for fd_fifo_timedget and fd_fifo_get */
 static int fifo_tget ( struct fifo * queue, void ** item, int istimed, const struct timespec *abstime)
 {
-	int timedout = 0;
 	int call_cb = 0;
+	int ret = 0;
 	
 	/* Check the parameters */
 	CHECK_PARAMS( CHECK_FIFO( queue ) && item && (abstime || !istimed) );
@@ -597,13 +598,12 @@ awaken:
 		TRACE_DEBUG(FULL, "The queue is being destroyed -> EPIPE");
 		return EPIPE;
 	}
-		
+	
 	if (queue->count > 0) {
 		/* There are items in the queue, so pick the first one */
 		*item = mq_pop(queue);
 		call_cb = test_l_cb(queue);
 	} else {
-		int ret = 0;
 		/* We have to wait for a new item */
 		queue->thrs++ ;
 		pthread_cleanup_push( fifo_cleanup, queue);
@@ -617,12 +617,7 @@ awaken:
 		if (ret == 0)
 			goto awaken;  /* test for spurious wake-ups */
 		
-		if (istimed && (ret == ETIMEDOUT)) {
-			timedout = 1;
-		} else {
-			/* Unexpected error condition (means we need to debug) */
-			ASSERT( ret == 0 /* never true */ );
-		}
+		/* otherwise (ETIMEDOUT / other error) just continue */
 	}
 	
 	/* Unlock */
@@ -633,7 +628,7 @@ awaken:
 		(*queue->l_cb)(queue, &queue->data);
 	
 	/* Done */
-	return timedout ? ETIMEDOUT : 0;
+	return ret;
 }
 
 /* Get the next available item, block until there is one */
