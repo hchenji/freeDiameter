@@ -1,9 +1,12 @@
 /*********************************************************************************************************
 * Software License Agreement (BSD License)                                                               *
-* Author: Sebastien Decugis <sdecugis@freediameter.net>							 *
+* Authors: Thomas Klausner <tk@giga.or.at> based on code by Sebastien Decugis <sdecugis@freediameter.net>*
 *													 *
-* Copyright (c) 2011, WIDE Project and NICT								 *
+* Copyright (c) 2019, Thomas Klausner									 *
+* Copyright (c) 2013, WIDE Project and NICT								 *
 * All rights reserved.											 *
+* 													 *
+* Written under contract by Effortel Technologies SA, http://effortel.com/                               *
 * 													 *
 * Redistribution and use of this software in source and binary forms, with or without modification, are  *
 * permitted provided that the following conditions are met:						 *
@@ -33,57 +36,72 @@
 * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.								 *
 *********************************************************************************************************/
 
-/* Header file for the rt_default extension. 
+/* Tokenizer
  *
- *  See the rt_default.conf.sample file for the format of the configuration file.
  */
- 
-/* FreeDiameter's common include file */
-#include <freeDiameter/extension.h>
 
-/* Host configuration for this specific extension */
-#include <rt_default-host.h>
+%{
+#include "dbg_loglevel.h"
+#include "dbg_loglevel_conf.tab.h"
 
-/* Parse the configuration file */
-int rtd_conf_handle(char * conffile);
+/* Update the column information */
+#define YY_USER_ACTION { 						\
+	yylloc->first_column = yylloc->last_column + 1; 		\
+	yylloc->last_column = yylloc->first_column + yyleng - 1;	\
+}
 
-/* Initialize the rules repository */
-int rtd_init(void);
+/* Avoid warning with newer flex */
+#define YY_NO_INPUT
 
-/* Destroy the rules repository */
-void rtd_fini(void);
+%}
 
-/* Some constants definitions */
-enum rtd_crit_type {
-	RTD_CRI_ALL	= 0,
-	RTD_CRI_OH,
-	RTD_CRI_OR,
-	RTD_CRI_DH,
-	RTD_CRI_DR,
-	RTD_CRI_UN,
-	RTD_CRI_SI,
-	
-	RTD_CRI_MAX
-};
+qstring		\"[^\"\n]*\"
 
-enum rtd_targ_type {
-	RTD_TAR_ID     = 0,
-	RTD_TAR_REALM,
-	
-	RTD_TAR_MAX
-};
 
-#define RTD_CRIT_REG	0x1
-#define RTD_TARG_REG	0x2
+%option bison-bridge bison-locations
+%option noyywrap
+%option nounput
 
-/* Add a rule */
-int rtd_add(enum rtd_crit_type ct, char * criteria, enum rtd_targ_type tt, char * target, int score, int flags);
+%%
 
-/* Process a message & peer list through the rules repository, updating the scores */
-int rtd_process( struct msg * msg, struct fd_list * candidates );
+	/* Update the line count */
+\n			{
+				yylloc->first_line++;
+				yylloc->last_line++;
+				yylloc->last_column=0;
+			}
 
-/* Reload the config file */
-void rtd_conf_reload(char *config_file);
+	/* Eat all spaces but not new lines */
+([[:space:]]{-}[\n])+	;
+	/* Eat all comments */
+#.*$			;
 
-/* For debug: dump the rule repository */
-void rtd_dump(void);
+	/* Recognize any integer */
+[-]?[[:digit:]]+	{
+				/* Convert this to an integer value */
+				int ret=0;
+				ret = sscanf(yytext, "%i", &yylval->integer);
+				if (ret != 1) {
+					/* No matching: an error occurred */
+					TRACE_ERROR("Unable to convert the value '%s' to a valid number: %s", yytext, strerror(errno));
+					return LEX_ERROR; /* trig an error in yacc parser */
+					/* Maybe we could REJECT instead of failing here? */
+				}
+				return INTEGER;
+			}
+
+
+
+	/* The key words */
+(?i:"LogLevel")	 	{	return LOGLEVEL;	}
+
+	/* Valid single characters for yyparse */
+[=;]			{ return yytext[0]; }
+
+	/* Unrecognized sequence, if it did not match any previous pattern */
+[^[:space:]=;\n]+	{
+				TRACE_ERROR("Unrecognized text on line %d col %d: '%s'.", yylloc->first_line, yylloc->first_column, yytext);
+			 	return LEX_ERROR;
+			}
+
+%%

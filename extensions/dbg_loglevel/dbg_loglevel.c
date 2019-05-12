@@ -1,9 +1,11 @@
 /*********************************************************************************************************
 * Software License Agreement (BSD License)                                                               *
-* Author: Sebastien Decugis <sdecugis@freediameter.net>							 *
+* Author: Thomas Klausner <tk@giga.or.at>								 *
 *													 *
-* Copyright (c) 2011, WIDE Project and NICT								 *
+* Copyright (c) 2019, Thomas Klausner									 *
 * All rights reserved.											 *
+* 													 *
+* Written under contract by Effortel Technologies SA, http://effortel.com/                               *
 * 													 *
 * Redistribution and use of this software in source and binary forms, with or without modification, are  *
 * permitted provided that the following conditions are met:						 *
@@ -33,57 +35,55 @@
 * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.								 *
 *********************************************************************************************************/
 
-/* Header file for the rt_default extension. 
- *
- *  See the rt_default.conf.sample file for the format of the configuration file.
- */
- 
-/* FreeDiameter's common include file */
-#include <freeDiameter/extension.h>
+#include <signal.h>
 
-/* Host configuration for this specific extension */
-#include <rt_default-host.h>
+/* See doc/dbg_loglevel.conf.sample for more details about the features of this extension */
+#include "dbg_loglevel.h"
 
-/* Parse the configuration file */
-int rtd_conf_handle(char * conffile);
+static char *config_file = NULL;
+#define MODULE_NAME "dbg_loglevel"
 
-/* Initialize the rules repository */
-int rtd_init(void);
+static void sig_hdlr(void)
+{
+	int old_log_level;
 
-/* Destroy the rules repository */
-void rtd_fini(void);
+	old_log_level = fd_g_debug_lvl;
+	if (dbg_loglevel_conf_handle(config_file) != 0) {
+		fd_log_error("%s: error during config file reload, restoring previous value", MODULE_NAME);
+		fd_g_debug_lvl = old_log_level;
+	}
+	fd_log_notice("%s: reloaded configuration, log level now %d", MODULE_NAME, fd_g_debug_lvl);
+}
 
-/* Some constants definitions */
-enum rtd_crit_type {
-	RTD_CRI_ALL	= 0,
-	RTD_CRI_OH,
-	RTD_CRI_OR,
-	RTD_CRI_DH,
-	RTD_CRI_DR,
-	RTD_CRI_UN,
-	RTD_CRI_SI,
-	
-	RTD_CRI_MAX
-};
+/* entry point */
+static int dbg_loglevel_entry(char * conffile)
+{
+	TRACE_ENTRY("%p", conffile);
 
-enum rtd_targ_type {
-	RTD_TAR_ID     = 0,
-	RTD_TAR_REALM,
-	
-	RTD_TAR_MAX
-};
+	config_file = conffile;
 
-#define RTD_CRIT_REG	0x1
-#define RTD_TARG_REG	0x2
+	/* default set by main program */
+	/* fd_g_debug_lvl = FD_LOG_NOTICE; */
 
-/* Add a rule */
-int rtd_add(enum rtd_crit_type ct, char * criteria, enum rtd_targ_type tt, char * target, int score, int flags);
+	/* Parse the configuration file */
+	CHECK_FCT(dbg_loglevel_conf_handle(config_file));
 
-/* Process a message & peer list through the rules repository, updating the scores */
-int rtd_process( struct msg * msg, struct fd_list * candidates );
+	/* Register reload callback */
+	CHECK_FCT(fd_event_trig_regcb(SIGUSR1, MODULE_NAME, sig_hdlr));
 
-/* Reload the config file */
-void rtd_conf_reload(char *config_file);
+	fd_log_notice("Extension 'Loglevel' initialized with log level %d", fd_g_debug_lvl);
 
-/* For debug: dump the rule repository */
-void rtd_dump(void);
+	/* We're done */
+	return 0;
+}
+
+/* Unload */
+void fd_ext_fini(void)
+{
+	TRACE_ENTRY();
+
+	/* Nothing to do */
+	return ;
+}
+
+EXTENSION_ENTRY(MODULE_NAME, dbg_loglevel_entry);

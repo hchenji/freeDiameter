@@ -1,9 +1,11 @@
 /*********************************************************************************************************
 * Software License Agreement (BSD License)                                                               *
-* Author: Sebastien Decugis <sdecugis@freediameter.net>							 *
+* Author: Thomas Klausner <tk@giga.or.at>								 *
 *													 *
-* Copyright (c) 2013, WIDE Project and NICT								 *
+* Copyright (c) 2018, Thomas Klausner									 *
 * All rights reserved.											 *
+* 													 *
+* Written under contract by Effortel Technologies SA, http://effortel.com/                               *
 * 													 *
 * Redistribution and use of this software in source and binary forms, with or without modification, are  *
 * permitted provided that the following conditions are met:						 *
@@ -33,113 +35,72 @@
 * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.								 *
 *********************************************************************************************************/
 
-/* 
- * Configurable routing of messages for freeDiameter.
- */
-
 #include <signal.h>
 
-#include "rt_default.h"
+/* See doc/rt_deny_by_size.conf.sample for more details about the features of this extension */
+#include "rt_deny_by_size.h"
 
-#define MODULE_NAME "rt_default"
+/* The configuration structure */
+struct rt_deny_by_size_conf rt_deny_by_size_conf;
 
-#include <pthread.h>
+static struct fd_rt_fwd_hdl * rt__deny_by_size_hdl = NULL;
+static char *config_file = NULL;
+#define MODULE_NAME "rt_deny_by_size"
+#define DEFAULT_MAX_SIZE 4096;
 
-static pthread_rwlock_t rtd_lock;
-
-static char *rtd_config_file;
-
-/* The callback called on new messages */
-static int rtd_out(void * cbdata, struct msg ** pmsg, struct fd_list * candidates)
+/* the routing callback that handles all the tasks of this extension */
+static int rt_deny_by_size_fwd_cb(void * cbdata, struct msg ** pmsg)
 {
-	struct msg * msg = *pmsg;
-	TRACE_ENTRY("%p %p %p", cbdata, msg, candidates);
-	int ret;
-	
-	CHECK_PARAMS(msg && candidates);
+	struct msg_hdr * hdr;
 
-	if (pthread_rwlock_rdlock(&rtd_lock) != 0) {
-		fd_log_notice("%s: read-lock failed, skipping handler", MODULE_NAME);
-		return 0;
+	/* Get the header of the message */
+	CHECK_FCT(fd_msg_hdr(*pmsg, &hdr));
+
+	if (hdr->msg_length > rt_deny_by_size_conf.maximum_size) {
+		if (hdr->msg_flags & CMD_FLAG_REQUEST) {
+			/* Create an answer */
+			CHECK_FCT(fd_msg_new_answer_from_req(fd_g_config->cnf_dict, pmsg, MSGFL_ANSW_ERROR));
+			CHECK_FCT(fd_msg_rescode_set(*pmsg, "DIAMETER_UNABLE_TO_COMPLY", "[rt_deny_by_size] Message is too big", NULL, 2));
+			CHECK_FCT( fd_msg_send(pmsg, NULL, NULL) );
+		}
 	}
-	/* Simply pass it to the appropriate function */
-	if (FD_IS_LIST_EMPTY(candidates)) {
-		ret = 0;
-	} else {
-		ret = rtd_process( msg, candidates );
-	}
-	if (pthread_rwlock_unlock(&rtd_lock) != 0) {
-		fd_log_notice("%s: read-unlock failed after rtd_out, exiting", MODULE_NAME);
-		exit(1);
-	}
-	return ret;
+
+	return 0;
 }
 
-/* handler */
-static struct fd_rt_out_hdl * rtd_hdl = NULL;
-
-static volatile int in_signal_handler = 0;
-
-/* signal handler */
 static void sig_hdlr(void)
 {
-	if (in_signal_handler) {
-		fd_log_error("%s: already handling a signal, ignoring new one", MODULE_NAME);
-		return;
+	int old_maximum_size;
+
+	old_maximum_size = rt_deny_by_size_conf.maximum_size;
+	if (rt_deny_by_size_conf_handle(config_file) != 0) {
+		fd_log_error("%s: error during config file reload, restoring previous value", MODULE_NAME);
+		rt_deny_by_size_conf.maximum_size = old_maximum_size;
 	}
-	in_signal_handler = 1;
-
-	if (pthread_rwlock_wrlock(&rtd_lock) != 0) {
-		fd_log_error("%s: locking failed, aborting config reload", MODULE_NAME);
-		return;
-	}
-	rtd_conf_reload(rtd_config_file);
-	if (pthread_rwlock_unlock(&rtd_lock) != 0) {
-		fd_log_error("%s: unlocking failed after config reload, exiting", MODULE_NAME);
-		exit(1);
-	}		
-
-	fd_log_notice("%s: reloaded configuration", MODULE_NAME);
-
-	in_signal_handler = 0;
+	fd_log_notice("%s: reloaded configuration, maximum size now %d", MODULE_NAME, rt_deny_by_size_conf.maximum_size);
 }
 
-
 /* entry point */
-static int rtd_entry(char * conffile)
+static int rt_deny_by_size_entry(char * conffile)
 {
 	TRACE_ENTRY("%p", conffile);
 
-	rtd_config_file = conffile;
-	pthread_rwlock_init(&rtd_lock, NULL);
+	config_file = conffile;
+	/* Initialize the configuration */
+	memset(&rt_deny_by_size_conf, 0, sizeof(rt_deny_by_size_conf));
+	rt_deny_by_size_conf.maximum_size = DEFAULT_MAX_SIZE;
 
-	if (pthread_rwlock_wrlock(&rtd_lock) != 0) {
-		fd_log_notice("%s: write-lock failed, aborting", MODULE_NAME);
-		return EDEADLK;
-	}
-
-	/* Initialize the repo */
-	CHECK_FCT( rtd_init() );
-	
 	/* Parse the configuration file */
-	CHECK_FCT( rtd_conf_handle(conffile) );
+	CHECK_FCT(rt_deny_by_size_conf_handle(config_file));
 
-	if (pthread_rwlock_unlock(&rtd_lock) != 0) {
-		fd_log_notice("%s: write-unlock failed, aborting", MODULE_NAME);
-		return EDEADLK;
-	}
+	/* Register the callback */
+	CHECK_FCT(fd_rt_fwd_register(rt_deny_by_size_fwd_cb, NULL, RT_FWD_REQ, &rt__deny_by_size_hdl));
 
 	/* Register reload callback */
 	CHECK_FCT(fd_event_trig_regcb(SIGUSR1, MODULE_NAME, sig_hdlr));
 
-#if 0
-	/* Dump the rules */
-	rtd_dump();
-#endif /* 0 */
-	
-	/* Register the callback */
-	CHECK_FCT( fd_rt_out_register( rtd_out, NULL, 5, &rtd_hdl ) );
-	
+	fd_log_notice("Extension 'Deny by size' initialized with maximum size %d", rt_deny_by_size_conf.maximum_size);
+
 	/* We're done */
 	return 0;
 }
@@ -148,17 +109,14 @@ static int rtd_entry(char * conffile)
 void fd_ext_fini(void)
 {
 	TRACE_ENTRY();
-	
-	/* Unregister the cb */
-	CHECK_FCT_DO( fd_rt_out_unregister ( rtd_hdl, NULL ), /* continue */ );
-	
-	/* Destroy the data */
-	rtd_fini();
 
-	pthread_rwlock_destroy(&rtd_lock);
+	/* Unregister the cb */
+	if (rt__deny_by_size_hdl) {
+		CHECK_FCT_DO(fd_rt_fwd_unregister(rt__deny_by_size_hdl, NULL), /* continue */);
+	}
 
 	/* Done */
 	return ;
 }
 
-EXTENSION_ENTRY(MODULE_NAME, rtd_entry);
+EXTENSION_ENTRY(MODULE_NAME, rt_deny_by_size_entry);
