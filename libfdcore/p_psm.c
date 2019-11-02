@@ -951,7 +951,9 @@ void fd_psm_abord(struct fd_peer * peer )
 	fd_psm_cleanup(peer, 1);
 	
 	/* Destroy the event list */
+#if 0 /* Open5GS : not stable to finish freeDiameter */
 	CHECK_FCT_DO( fd_fifo_del(&peer->p_events), /* continue */ );
+#endif
 	
 	/* Remaining cleanups are performed in fd_peer_free */
 	return;
